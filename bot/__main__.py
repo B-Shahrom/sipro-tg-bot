@@ -4,17 +4,19 @@ Import a catalog CSV:    python -m bot import data/catalog_sample.csv"""
 import argparse
 import asyncio
 import logging
+import sys
 from pathlib import Path
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.types import BotCommand, BotCommandScopeAllPrivateChats
+from pydantic import ValidationError
 
 from .ai.assistant import Assistant
 from .config import get_settings
 from .db import Database
-from .handlers import admin, builder, cart, catalog, chat, common, handoff, managers, service
+from .handlers import admin, builder, cart, catalog, chat, common, handoff, managers, service, utils
 from .middlewares import CustomerMiddleware
 
 log = logging.getLogger("bot")
@@ -22,6 +24,7 @@ log = logging.getLogger("bot")
 
 def build_dispatcher() -> Dispatcher:
     dp = Dispatcher()
+    dp.include_router(utils.router)
     dp.include_router(admin.router)
     dp.include_router(managers.router)
     # Customer-facing routers, in priority order. `chat` is the catch-all and must be last.
@@ -80,6 +83,14 @@ def main() -> None:
     imp = sub.add_parser("import", help="import catalog CSV")
     imp.add_argument("path", type=Path)
     args = parser.parse_args()
+    try:
+        get_settings()
+    except ValidationError as e:
+        print("Configuration error in .env:", file=sys.stderr)
+        for err in e.errors():
+            field = ".".join(str(p) for p in err["loc"]).upper()
+            print(f"  {field}: {err['msg']}", file=sys.stderr)
+        sys.exit(1)
     if args.cmd == "import":
         asyncio.run(import_catalog(args.path))
     else:

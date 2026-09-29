@@ -29,12 +29,17 @@ A Telegram bot for a PC hardware store: it answers customers with AI and hands t
 ## Setup
 
 1. **Create the bot.** In [@BotFather](https://t.me/BotFather), run `/newbot` and copy the token.
-2. **Create a managers group.** Add the bot to it and get the group id. One way is to forward a group message to [@RawDataBot](https://t.me/RawDataBot); the id starts with `-100`. The bot's default privacy mode is fine, because it only needs commands and replies to its own messages.
+2. **Create a managers group** and add the bot to it. The bot's default privacy mode is fine, because it only needs commands and replies to its own messages.
 3. **Get an Anthropic API key** at https://console.anthropic.com.
 4. **Configure:**
    ```bash
-   cp .env.example .env   # fill in BOT_TOKEN, ANTHROPIC_API_KEY, MANAGER_CHAT_ID, ADMIN_IDS, CURRENCY
+   cp .env.example .env   # fill in BOT_TOKEN, ANTHROPIC_API_KEY, CURRENCY
    ```
+   `ADMIN_IDS` and `MANAGER_CHAT_ID` must be **numeric ids**, not @usernames. To find them, start the bot once with the placeholder values, then:
+   - send `/id` to the bot in private chat to get your user id (`ADMIN_IDS`);
+   - send `/id` in the managers' group to get the group id (`MANAGER_CHAT_ID`, starts with `-100`).
+
+   Put both in `.env` and restart the bot.
 5. **Fill in `data/store_info.md`** with your real address, hours, delivery, payment, and warranty terms. The AI answers store questions only from this file.
 6. **Load the catalog.** Either run `python -m bot import data/catalog_sample.csv` to start with the demo catalog (40 items), or send your own CSV to the bot with the caption `/import`.
 7. **Run:**

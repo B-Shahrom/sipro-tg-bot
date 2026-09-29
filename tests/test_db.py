@@ -77,3 +77,16 @@ def test_phone_and_text_helpers():
     assert strip_html("<b>A</b> &amp; B") == "A & B"
     parts = split_message("a" * 5000 + "\nb", limit=4096)
     assert all(len(p) <= 4096 for p in parts) and "".join(parts).replace("\n", "") == "a" * 5000 + "b"
+
+
+def test_config_rejects_usernames_in_admin_ids(monkeypatch):
+    import pytest
+    from pydantic import ValidationError
+
+    from bot.config import Settings
+
+    monkeypatch.setenv("ADMIN_IDS", "123, 456")
+    assert Settings().admin_ids == [123, 456]
+    monkeypatch.setenv("ADMIN_IDS", "@B_Shahrom")
+    with pytest.raises(ValidationError, match="not a numeric Telegram user id"):
+        Settings()

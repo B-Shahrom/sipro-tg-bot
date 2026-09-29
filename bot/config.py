@@ -43,6 +43,28 @@ class Settings(BaseSettings):
             return [item.strip() for item in v.split(",") if item.strip()]
         return v
 
+    @field_validator("admin_ids", mode="before")
+    @classmethod
+    def _numeric_admin_ids(cls, v):
+        v = cls._split_csv(v)  # "before" validators run in reverse order, so split here too
+        for item in v:
+            if not str(item).lstrip("-").isdigit():
+                raise ValueError(
+                    f"{item!r} is not a numeric Telegram user id. Use numbers like 123456789, not @usernames. "
+                    "Send /id to your bot (or message @userinfobot) to find yours."
+                )
+        return v
+
+    @field_validator("manager_chat_id", mode="before")
+    @classmethod
+    def _numeric_chat_id(cls, v):
+        if isinstance(v, str) and not v.strip().lstrip("-").isdigit():
+            raise ValueError(
+                f"{v!r} is not a numeric chat id. Add the bot to the managers' group and send /id there; "
+                "the group id looks like -1001234567890."
+            )
+        return v
+
 
 @lru_cache
 def get_settings() -> Settings:

@@ -115,8 +115,8 @@ async def h(db):
     import importlib
 
     import bot.__main__ as main_mod
-    from bot.handlers import admin, builder, cart, catalog, chat, common, handoff, managers, service
-    for mod in (chat, catalog, cart, service, builder, handoff, common, managers, admin):
+    from bot.handlers import admin, builder, cart, catalog, chat, common, handoff, managers, service, utils
+    for mod in (chat, catalog, cart, service, builder, handoff, common, managers, admin, utils):
         importlib.reload(mod)
     importlib.reload(main_mod)
     globals()["build_dispatcher"] = main_mod.build_dispatcher
@@ -246,3 +246,10 @@ async def test_admin_stats_only_for_admins(h):
     h.assistant.script = [resp("end_turn", NS(type="text", text="не админ"))]
     await h.say("/stats")  # regular customer: falls through to the assistant
     assert h.session.sent(CUSTOMER)[-1].text == "не админ"
+
+
+async def test_id_command(h):
+    await h.say("/id")
+    assert str(CUSTOMER) in h.session.sent(CUSTOMER)[-1].text
+    await h.say("/id", user=h.manager, chat_id=MANAGERS)
+    assert str(MANAGERS) in h.session.sent(MANAGERS)[-1].text
