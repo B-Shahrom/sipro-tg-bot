@@ -12,9 +12,11 @@ from aiogram.enums import ParseMode
 from aiogram.methods import (
     AnswerCallbackQuery,
     CopyMessage,
+    DeleteMessage,
     EditMessageReplyMarkup,
     EditMessageText,
     SendMessage,
+    SendPhoto,
     TelegramMethod,
 )
 from aiogram.types import (
@@ -24,6 +26,7 @@ from aiogram.types import (
     MessageId,
     MessageOriginHiddenUser,
     MessageOriginUser,
+    PhotoSize,
     Update,
     User,
 )
@@ -31,7 +34,8 @@ from aiogram.types import (
 from bot.__main__ import build_dispatcher
 from bot.ai.assistant import Assistant
 from bot.config import get_settings
-from bot.keyboards import CartCb, CategoryCb, OrderStatusCb, ProductCb
+from bot.keyboards import BuildCb, CartCb, CategoryCb, OrderStatusCb, ProductCb, QuickCb
+from bot.offline.engine import OfflineAssistant
 
 CUSTOMER = 1000
 MANAGERS = get_settings().manager_chat_id
@@ -51,6 +55,10 @@ class FakeSession(BaseSession):
                            text=method.text)
         if isinstance(method, CopyMessage):
             return MessageId(message_id=next(self._ids))
+        if isinstance(method, SendPhoto):
+            return Message(message_id=next(self._ids), date=datetime.now(), chat=Chat(id=method.chat_id, type="private"),
+                           photo=[PhotoSize(file_id=f"FILE-{next(self._ids)}", file_unique_id="u", width=800,
+                                            height=800)], caption=method.caption)
         if isinstance(method, (EditMessageText, EditMessageReplyMarkup, AnswerCallbackQuery)):
             return True
         return True
@@ -75,6 +83,7 @@ class FakeSession(BaseSession):
 class ScriptedAssistant(Assistant):
     def __init__(self, settings, db):
         super().__init__(settings, db)
+        self.enabled = True  # tests script the AI instead of calling the API
         self.script = []
 
     async def _create(self, system, messages):
@@ -93,6 +102,7 @@ class Harness:
         self.bot = Bot("42:TEST", session=self.session, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
         self.db = db
         self.assistant = ScriptedAssistant(self.settings, db)
+        self.offline = OfflineAssistant(db, self.settings)
         self.dp = build_dispatcher()
         self._update_ids = itertools.count(1)
         self._msg_ids = itertools.count(1)
@@ -101,7 +111,8 @@ class Harness:
 
     async def feed(self, **kwargs):
         update = Update(update_id=next(self._update_ids), **kwargs)
-        await self.dp.feed_update(self.bot, update, db=self.db, settings=self.settings, assistant=self.assistant)
+        await self.dp.feed_update(self.bot, update, db=self.db, settings=self.settings, assistant=self.assistant,
+                                  offline=self.offline)
 
     def message(self, text=None, user=None, chat_id=CUSTOMER, **extra) -> Message:
         chat = Chat(id=chat_id, type="private" if chat_id > 0 else "supergroup")
@@ -251,7 +262,7 @@ async def test_pc_builder_sends_prompt_to_ai(h):
 
 async def test_admin_stats_only_for_admins(h):
     await h.say("/stats", user=User(id=1, is_bot=False, first_name="Admin"), chat_id=1)
-    assert "Товаров в каталоге: 40" in h.session.sent(1)[-1].text
+    assert "Товаров в каталоге: 124" in h.session.sent(1)[-1].text
     h.assistant.script = [resp("end_turn", NS(type="text", text="не админ"))]
     await h.say("/stats")  # regular customer: falls through to the assistant
     assert h.session.sent(CUSTOMER)[-1].text == "не админ"
@@ -295,3 +306,135 @@ async def test_id_reply_in_group_shows_author_and_relayed_customer(h):
                        from_user=User(id=42, is_bot=True, first_name="bot"), text="заказ")
     await h.say("/id", user=h.manager, chat_id=MANAGERS, reply_to_message=bot_post)
     assert f"<code>{CUSTOMER}</code>" in h.session.sent(MANAGERS)[-1].text
+
+
+
+# ---------------------------------------------------------------- AI off / failing → rule-based assistant
+
+async def test_no_ai_key_uses_rule_based_search(h):
+    h.assistant.enabled = False
+    await h.say("монитор для игр до 25000")
+    reply = h.session.sent(CUSTOMER)[-1]
+    assert "мониторы до 25 000" in reply.text
+    buttons = [b.callback_data for row in reply.reply_markup.inline_keyboard for b in row]
+    assert any(cb.startswith("prod:MON-") for cb in buttons)
+
+
+async def test_ai_failure_falls_back_and_alerts_managers_once(h):
+    from bot.ai.assistant import AssistantUnavailable
+
+    calls = {"n": 0}
+
+    async def broken(system, messages):
+        calls["n"] += 1
+        raise AssistantUnavailable("no connection to the API")
+
+    h.assistant._create = broken
+    await h.say("где вы находитесь?")
+    assert "Адрес" in h.session.sent(CUSTOMER)[-1].text
+    alerts = [m for m in h.session.sent(MANAGERS) if "недоступен" in m.text]
+    assert len(alerts) == 1
+
+    # While the circuit breaker is open the AI is skipped entirely: fast answers, no repeated alerts.
+    await h.say("есть доставка?")
+    assert "Доставка" in h.session.sent(CUSTOMER)[-1].text
+    assert calls["n"] == 1
+    assert len([m for m in h.session.sent(MANAGERS) if "недоступен" in m.text]) == 1
+
+    # Recovery: next successful AI reply tells the managers.
+    h.assistant._down_until = 0
+    h.assistant._create = ScriptedAssistant._create.__get__(h.assistant)
+    h.assistant.script = [resp("end_turn", NS(type="text", text="Я снова тут"))]
+    await h.say("привет")
+    assert h.session.sent(CUSTOMER)[-1].text == "Я снова тут"
+    assert "снова работает" in h.session.sent(MANAGERS)[-1].text
+
+
+async def test_ai_timeout_falls_back(h):
+    import asyncio
+
+    h.settings = h.settings.model_copy(update={"ai_timeout": 0.05})
+    h.assistant.settings = h.settings
+
+    async def slow(system, messages):
+        await asyncio.sleep(1)
+
+    h.assistant._create = slow
+    await h.say("можно в рассрочку?")
+    assert "Оплата" in h.session.sent(CUSTOMER)[-1].text
+
+
+async def test_offline_build_and_add_whole_build_to_cart(h):
+    h.assistant.enabled = False
+    await h.say("собрать пк для игр за 100000")
+    reply = h.session.sent(CUSTOMER)[-1]
+    assert "Сборка для игр" in reply.text
+    await h.click(BuildCb(action="add").pack())
+    cart = await h.db.cart(CUSTOMER)
+    assert len(cart) >= 7 and sum(li.subtotal for li in cart) <= 100000
+
+
+async def test_offline_builder_form(h):
+    h.assistant.enabled = False
+    await h.say("🧩 Собрать ПК")
+    await h.say("🎮 Игры")
+    await h.say("150000")
+    await h.say("белый")
+    reply = h.session.sent(CUSTOMER)[-1]
+    assert "Сборка для игр" in reply.text and "White" in reply.text
+
+
+async def test_offline_handoff_and_quick_buttons(h):
+    h.assistant.enabled = False
+    await h.say("позовите менеджера")
+    assert (await h.db.get_user(CUSTOMER))["handoff"]
+    assert "просит менеджера" in h.session.sent(MANAGERS)[-1].text
+    await h.db.set_handoff(CUSTOMER, False)
+
+    await h.click(QuickCb(action="catalog").pack())
+    assert h.session.sent(CUSTOMER)[-1].text == "Выберите категорию:"
+
+
+async def test_product_card_uses_local_image_and_caches_file_id(h):
+    await h.click(ProductCb(sku="GPU-4060-8", action="view0.0").pack())
+    photos = [c for c in h.session.calls if isinstance(c, SendPhoto)]
+    assert photos and "RTX 4060" in photos[-1].caption and len(photos[-1].caption) <= 1024
+    cached = (await h.db.get_product("GPU-4060-8")).image_file_id
+    assert cached.startswith("FILE-")
+    await h.click(ProductCb(sku="GPU-4060-8", action="view0.0").pack())
+    assert [c for c in h.session.calls if isinstance(c, SendPhoto)][-1].photo == cached  # re-uses Telegram's copy
+
+
+async def test_ask_about_product_offline(h):
+    h.assistant.enabled = False
+    await h.click(ProductCb(sku="CPU-R7-7800X3D", action="ask").pack())
+    reply = h.session.sent(CUSTOMER)[-1]
+    assert "Сокет AM5" in reply.text
+    buttons = [b.callback_data for row in reply.reply_markup.inline_keyboard for b in row]
+    assert any(cb.startswith("prod:MB-") for cb in buttons)
+
+
+async def test_cart_warns_about_incompatible_parts(h):
+    await h.db.cart_add(CUSTOMER, "CPU-R7-7800X3D", 1)
+    await h.db.cart_add(CUSTOMER, "MB-Z790-P", 1)
+    await h.say("🛒 Корзина")
+    text = h.session.sent(CUSTOMER)[-1].text
+    assert "Проверка совместимости" in text and "❌" in text and "AM5" in text
+
+
+async def test_ai_quota_exhausted_uses_rule_based(h):
+    h.settings = h.settings.model_copy(update={"ai_daily_limit": 1})
+    h.assistant.script = [resp("end_turn", NS(type="text", text="ответ ИИ"))]
+    await h.say("привет")
+    assert h.session.sent(CUSTOMER)[-1].text == "ответ ИИ"
+    await h.say("где вы находитесь?")  # quota used up → rule-based, not an error
+    assert "Адрес" in h.session.sent(CUSTOMER)[-1].text
+
+
+async def test_opening_product_from_assistant_reply_keeps_the_reply(h):
+    h.assistant.enabled = False
+    await h.say("собрать пк для игр за 100000")
+    await h.click(ProductCb(sku="GPU-4060-8", action="view").pack())
+    assert not [c for c in h.session.calls if isinstance(c, DeleteMessage)]
+    await h.click(ProductCb(sku="GPU-4060-8", action="view0.0").pack())  # from a catalog list: list is replaced
+    assert [c for c in h.session.calls if isinstance(c, DeleteMessage)]

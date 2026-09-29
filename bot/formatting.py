@@ -16,19 +16,33 @@ def esc(text: str) -> str:
     return html.escape(text, quote=False)
 
 
-def product_card(p: Product, currency: str, lang: str) -> str:
-    lines = [f"<b>{esc(p.name)}</b>"]
+def product_card(p: Product, currency: str, lang: str, limit: int = TELEGRAM_LIMIT) -> str:
+    """Product description; drops the description, then trims specs, to fit `limit` (1024 for photo captions)."""
+    head = [f"<b>{esc(p.name)}</b>"]
     if p.brand:
-        lines.append(f"Бренд: {esc(p.brand)}")
-    lines.append(f"Артикул: <code>{esc(p.sku)}</code>")
-    lines.append(f"\n💰 <b>{money(p.price, currency)}</b>")
-    lines.append(t("in_stock", lang, stock=p.stock) if p.stock > 0 else t("out_of_stock", lang))
-    if p.specs:
-        specs = "\n".join(f"• {esc(s.strip())}" for s in p.specs.split(";") if s.strip())
-        lines.append(f"\n{specs}")
-    if p.description:
-        lines.append(f"\n{esc(p.description)}")
-    return "\n".join(lines)
+        head.append(f"Бренд: {esc(p.brand)}")
+    head.append(f"Артикул: <code>{esc(p.sku)}</code>")
+    head.append(f"\n💰 <b>{money(p.price, currency)}</b>")
+    head.append(t("in_stock", lang, stock=p.stock) if p.stock > 0 else t("out_of_stock", lang))
+    specs = [f"• {esc(s.strip())}" for s in p.specs.split(";") if s.strip()]
+    description = f"\n{esc(p.description)}" if p.description else ""
+
+    def build(n_specs: int, with_description: bool) -> str:
+        parts = list(head)
+        if n_specs:
+            parts.append("\n" + "\n".join(specs[:n_specs]))
+        if with_description and description:
+            parts.append(description)
+        return "\n".join(parts)
+
+    text = build(len(specs), True)
+    if len(text) <= limit:
+        return text
+    for n in range(len(specs), -1, -1):
+        text = build(n, False)
+        if len(text) <= limit:
+            return text
+    return text[:limit]
 
 
 def cart_text(lines: list[CartLine], currency: str, lang: str) -> str:

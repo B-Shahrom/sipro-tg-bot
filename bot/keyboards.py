@@ -38,6 +38,14 @@ class HandoffCb(CallbackData, prefix="hand"):
     action: str  # back_to_ai
 
 
+class BuildCb(CallbackData, prefix="build"):
+    action: str  # add
+
+
+class QuickCb(CallbackData, prefix="quick"):
+    action: str  # catalog | builder | manager | service | cart
+
+
 def main_menu(lang: str) -> ReplyKeyboardMarkup:
     b = lambda key: KeyboardButton(text=t(key, lang))  # noqa: E731
     return ReplyKeyboardMarkup(
@@ -129,4 +137,34 @@ def ticket_status_kb(ticket_id: int) -> InlineKeyboardMarkup:
 def back_to_ai_kb(lang: str) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text=t("btn_back_to_ai", lang), callback_data=HandoffCb(action="back_to_ai"))
+    return kb.as_markup()
+
+
+QUICK_LABELS = {"catalog": "btn_catalog", "builder": "btn_builder", "manager": "btn_manager",
+                "service": "btn_service", "cart": "btn_cart"}
+
+
+def offline_reply_kb(products, currency: str, lang: str, with_build: bool = False,
+                     quick: list[str] | None = None) -> InlineKeyboardMarkup | None:
+    """Buttons under a rule-based reply: products to open, "add the build to cart", quick actions."""
+    from .formatting import money
+
+    kb = InlineKeyboardBuilder()
+    rows = []
+    if with_build:
+        kb.button(text=t("btn_add_build", lang), callback_data=BuildCb(action="add"))
+        rows.append(1)
+    for p in products:
+        kb.button(text=f"{p.name[:40]} — {money(p.price, currency)}", callback_data=ProductCb(sku=p.sku, action="view"))
+        rows.append(1)
+    quick = quick or []
+    for action in quick:
+        kb.button(text=t(QUICK_LABELS[action], lang), callback_data=QuickCb(action=action))
+    if quick:
+        rows.append(min(len(quick), 3))
+        if len(quick) > 3:
+            rows.append(len(quick) - 3)
+    if not rows:
+        return None
+    kb.adjust(*rows)
     return kb.as_markup()

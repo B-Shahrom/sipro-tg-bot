@@ -12,8 +12,9 @@ from ..texts import t
 router = Router(name="handoff")
 
 
-async def request_manager(message: Message, db: Database, settings: Settings, lang: str) -> None:
-    user_id = message.from_user.id
+async def request_manager(message: Message, db: Database, settings: Settings, lang: str,
+                          user_id: int | None = None) -> None:
+    user_id = user_id or message.from_user.id
     await start_handoff(message.bot, db, settings.manager_chat_id, user_id, "Клиент нажал «Менеджер»")
     await message.answer(t("handoff_started", lang), reply_markup=back_to_ai_kb(lang))
 

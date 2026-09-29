@@ -29,6 +29,7 @@ def tool_use(id_, name, input_):
 class FakeAssistant(Assistant):
     def __init__(self, settings, db, responses):
         super().__init__(settings, db)
+        self.enabled = True
         self.responses = list(responses)
         self.requests = []
 
@@ -116,6 +117,8 @@ async def test_api_error_raises_unavailable(db):
     await db.upsert_user(100, None, "T", "ru")
 
     class Failing(Assistant):
+        enabled = True
+
         async def _create(self, system, messages):
             request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
             raise anthropic.APIConnectionError(request=request)

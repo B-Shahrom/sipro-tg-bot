@@ -7,8 +7,8 @@ from ..keyboards import main_menu
 from ..texts import t
 
 
-async def show_orders(message: Message, db: Database, settings: Settings, lang: str) -> None:
-    user_id = message.from_user.id
+async def show_orders(message: Message, db: Database, settings: Settings, lang: str, user_id: int | None = None) -> None:
+    user_id = user_id or message.from_user.id
     orders = await db.user_orders(user_id)
     tickets = await db.user_tickets(user_id)
     if not orders and not tickets:

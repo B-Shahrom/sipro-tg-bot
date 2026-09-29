@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS products (
     specs        TEXT NOT NULL DEFAULT '',
     description  TEXT NOT NULL DEFAULT '',
     image_url    TEXT NOT NULL DEFAULT '',
+    image_file_id TEXT NOT NULL DEFAULT '',
     active       INTEGER NOT NULL DEFAULT 1,
     search_text  TEXT NOT NULL DEFAULT ''
 );
@@ -109,6 +110,7 @@ class Product:
     description: str
     image_url: str
     active: bool
+    image_file_id: str = ""
 
 
 @dataclass
@@ -166,6 +168,7 @@ def _row_to_product(row: aiosqlite.Row) -> Product:
         description=row["description"],
         image_url=row["image_url"],
         active=bool(row["active"]),
+        image_file_id=row["image_file_id"],
     )
 
 
@@ -181,7 +184,15 @@ class Database:
         self.conn.row_factory = aiosqlite.Row
         await self.conn.execute("PRAGMA journal_mode=WAL")
         await self.conn.executescript(SCHEMA)
+        await self._migrate()
         await self.conn.commit()
+
+    async def _migrate(self) -> None:
+        """Add columns introduced after the first release to existing databases."""
+        async with self.conn.execute("PRAGMA table_info(products)") as cur:
+            columns = {row[1] for row in await cur.fetchall()}
+        if "image_file_id" not in columns:
+            await self.conn.execute("ALTER TABLE products ADD COLUMN image_file_id TEXT NOT NULL DEFAULT ''")
 
     async def close(self) -> None:
         if self.conn:
@@ -322,7 +333,10 @@ class Database:
                ON CONFLICT(sku) DO UPDATE SET
                  category = excluded.category, name = excluded.name, brand = excluded.brand,
                  price = excluded.price, stock = excluded.stock, specs = excluded.specs,
-                 description = excluded.description, image_url = excluded.image_url,
+                 description = excluded.description,
+                 image_file_id = CASE WHEN products.image_url = excluded.image_url
+                                      THEN products.image_file_id ELSE '' END,
+                 image_url = excluded.image_url,
                  search_text = excluded.search_text, active = 1""",
             rows,
         )
@@ -347,6 +361,26 @@ class Database:
             async for row in cur:
                 writer.writerow(list(row))
         return out.getvalue()
+
+    async def set_image_file_id(self, sku: str, file_id: str) -> None:
+        await self.conn.execute("UPDATE products SET image_file_id = ? WHERE sku = ?", (file_id, sku))
+        await self.conn.commit()
+
+    async def products_by_skus(self, skus: list[str]) -> list[Product]:
+        found = {}
+        for sku in skus:
+            p = await self.get_product(sku)
+            if p and p.active:
+                found[sku] = p
+        return [found[s] for s in skus if s in found]
+
+    async def all_products(self, category: str | None = None) -> list[Product]:
+        sql, args = "SELECT * FROM products WHERE active = 1", []
+        if category:
+            sql += " AND category = ?"
+            args.append(category)
+        async with self.conn.execute(sql + " ORDER BY price", args) as cur:
+            return [_row_to_product(r) for r in await cur.fetchall()]
 
     async def count_products(self) -> int:
         async with self.conn.execute("SELECT COUNT(*) FROM products WHERE active = 1") as cur:

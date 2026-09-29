@@ -18,6 +18,7 @@ from .config import get_settings
 from .db import Database
 from .handlers import admin, builder, cart, catalog, chat, common, handoff, managers, service, utils
 from .middlewares import CustomerMiddleware
+from .offline.engine import OfflineAssistant
 
 log = logging.getLogger("bot")
 
@@ -43,6 +44,7 @@ async def run_bot() -> None:
     db = Database(settings.db_path)
     await db.connect()
     assistant = Assistant(settings, db)
+    offline = OfflineAssistant(db, settings)
     bot = Bot(settings.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     commands = [
         BotCommand(command="start", description="Главное меню"),
@@ -55,9 +57,13 @@ async def run_bot() -> None:
 
     if await db.count_products() == 0:
         log.warning("Catalog is empty. Import one: python -m bot import data/catalog_sample.csv (or /import in Telegram)")
-    log.info("Starting bot (model=%s, effort=%s)", settings.claude_model, settings.claude_effort)
+    if assistant.enabled:
+        log.info("Starting bot: AI on (model=%s, effort=%s), rule-based fallback ready",
+                 settings.claude_model, settings.claude_effort)
+    else:
+        log.warning("Starting bot WITHOUT AI (no ANTHROPIC_API_KEY or AI_ENABLED=false): rule-based assistant only")
     try:
-        await build_dispatcher().start_polling(bot, db=db, settings=settings, assistant=assistant)
+        await build_dispatcher().start_polling(bot, db=db, settings=settings, assistant=assistant, offline=offline)
     finally:
         await db.close()
         await bot.session.close()

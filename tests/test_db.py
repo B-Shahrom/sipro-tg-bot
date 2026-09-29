@@ -3,15 +3,15 @@ from bot.formatting import normalize_phone, split_message, strip_html
 
 async def test_import_and_categories(db):
     cats = dict(await db.categories())
-    assert cats["Видеокарты"] == 4
-    assert await db.count_products() == 40
+    assert cats["Видеокарты"] == 12
+    assert await db.count_products() == 124
 
 
 async def test_reimport_hides_missing_and_reports_errors(db):
     csv = "sku,category,name,price,stock\nGPU-4060-8,Видеокарты,RTX 4060,30000,1\nBAD,Видеокарты,Broken,abc,1\n"
     imported, deactivated, errors = await db.import_catalog_csv(csv)
     assert imported == 1
-    assert deactivated == 39
+    assert deactivated == 123
     assert len(errors) == 1 and "line 3" in errors[0]
     assert (await db.get_product("GPU-4060-8")).price == 30000
     assert not (await db.get_product("CPU-R5-7600")).active
@@ -26,9 +26,9 @@ async def test_search_is_case_insensitive_for_cyrillic(db):
     results = await db.search_products("готовые пк")
     assert {p.sku for p in results} >= {"PC-GAME-4060", "PC-OFFICE-5600G"}
     am5 = await db.search_products("am5 ddr5", category="Материнские платы")
-    assert {p.sku for p in am5} == {"MB-B650M-A", "MB-B650-TUF"}
-    cheap = await db.search_products(category="Мониторы", max_price=20000)
-    assert [p.sku for p in cheap] == ["MON-24-IPS-165"]
+    assert {p.sku for p in am5} == {"MB-A620M", "MB-B650M-A", "MB-B650-TUF", "MB-B650I", "MB-X870-E"}
+    cheap = await db.search_products(category="Мониторы", max_price=10000)
+    assert [p.sku for p in cheap] == ["MON-22-OFFICE", "MON-24-IPS-100"]
 
 
 async def test_cart_to_order(db):

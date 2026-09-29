@@ -25,8 +25,14 @@ class Settings(BaseSettings):
     store_name: str = "SIPRO"
     currency: str = "₽"
     db_path: Path = ROOT_DIR / "data" / "bot.db"
+    # Relative image_url values in the catalog (e.g. images/GPU-4060-8.jpg) are resolved against this folder.
+    media_dir: Path = ROOT_DIR / "data"
     store_info_path: Path = ROOT_DIR / "data" / "store_info.md"
 
+    # Set to false to run without AI (rule-based assistant only). Without an API key the AI is off automatically.
+    ai_enabled: bool = True
+    # Seconds to wait for an AI reply before answering with the rule-based assistant instead.
+    ai_timeout: float = 60
     claude_model: str = "claude-opus-5"
     claude_effort: str = "medium"
     # Server-side refusal fallbacks (Claude API only; disable for Bedrock/Vertex/Foundry proxies).

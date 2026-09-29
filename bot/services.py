@@ -1,10 +1,11 @@
 """Messaging to the managers' group and the live-chat (handoff) relay."""
 
 import logging
+from pathlib import Path
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.types import InlineKeyboardMarkup, Message
+from aiogram.types import FSInputFile, InlineKeyboardMarkup, Message
 
 from .db import Database
 from .formatting import esc, split_message, strip_html, user_link
@@ -83,3 +84,33 @@ async def forward_to_managers(bot: Bot, db: Database, manager_chat_id: int, mess
         await db.remember_relay(copied.message_id, user_id)
     except TelegramBadRequest:
         log.exception("could not copy message from %s", user_id)
+
+
+def photo_source(p, media_dir: Path) -> str | FSInputFile | None:
+    """Telegram file_id (fastest), URL, or a local file under media_dir."""
+    if p.image_file_id:
+        return p.image_file_id
+    if not p.image_url:
+        return None
+    if p.image_url.startswith(("http://", "https://")):
+        return p.image_url
+    path = (media_dir / p.image_url).resolve()
+    if path.is_file() and path.is_relative_to(media_dir.resolve()):
+        return FSInputFile(path)
+    return None
+
+
+async def send_product(message: Message, p, db: Database, media_dir: Path, caption: str, reply_markup=None) -> Message:
+    """Send a product card as a photo when an image is available, caching Telegram's file_id for next time."""
+    source = photo_source(p, media_dir)
+    if source is not None:
+        try:
+            sent = await message.answer_photo(source, caption=caption, reply_markup=reply_markup)
+            if not p.image_file_id and sent.photo:
+                await db.set_image_file_id(p.sku, sent.photo[-1].file_id)
+            return sent
+        except TelegramBadRequest:
+            log.warning("could not send image for %s (%s)", p.sku, p.image_url)
+            if p.image_file_id:
+                await db.set_image_file_id(p.sku, "")
+    return await message.answer(caption, reply_markup=reply_markup)

@@ -8,6 +8,7 @@ from ..config import Settings
 from ..db import Database
 from ..formatting import cart_text, esc, normalize_phone, order_summary
 from ..keyboards import CartCb, cancel_kb, cart_kb, choices_kb, main_menu, order_status_kb, phone_kb
+from ..offline.compat import check
 from ..services import customer_header, to_managers
 from ..texts import all_variants, t
 
@@ -23,13 +24,23 @@ class Checkout(StatesGroup):
     confirm = State()
 
 
+async def cart_view(db: Database, settings: Settings, lang: str, user_id: int, lines) -> str:
+    """Cart text plus compatibility warnings for the PC parts in it."""
+    text = cart_text(lines, settings.currency, lang)
+    issues = check(await db.products_by_skus([li.sku for li in lines]))
+    if issues:
+        text += "\n\n" + t("cart_compat_title", lang) + "\n" + "\n".join(esc(str(i)) for i in issues)
+    return text
+
+
 async def show_cart(message: Message, db: Database, settings: Settings, lang: str, user_id: int | None = None) -> None:
-    lines = await db.cart(user_id or message.from_user.id)
+    user_id = user_id or message.from_user.id
+    lines = await db.cart(user_id)
     if not lines:
         await message.answer(t("cart_empty", lang), reply_markup=main_menu(lang))
         return
     await message.answer(
-        cart_text(lines, settings.currency, lang),
+        await cart_view(db, settings, lang, user_id, lines),
         reply_markup=cart_kb([(li.sku, li.name) for li in lines], lang),
     )
 
@@ -57,7 +68,7 @@ async def on_cart(call: CallbackQuery, callback_data: CartCb, state: FSMContext,
     lines = await db.cart(user_id)
     if lines:
         await call.message.edit_text(
-            cart_text(lines, settings.currency, lang),
+            await cart_view(db, settings, lang, user_id, lines),
             reply_markup=cart_kb([(li.sku, li.name) for li in lines], lang),
         )
     else:

@@ -54,12 +54,19 @@ async def cmd_export(message: Message, db: Database):
 
 
 @router.message(Command("stats"))
-async def cmd_stats(message: Message, db: Database):
+async def cmd_stats(message: Message, db: Database, assistant: Assistant):
     active = await db.orders_by_status(("new", "confirmed", "paid", "shipped"), limit=1000)
+    if not assistant.enabled:
+        ai = "выключен (нет ключа API или AI_ENABLED=false) — работает резервный режим"
+    elif assistant.available:
+        ai = f"работает ({esc(assistant.settings.claude_model)})"
+    else:
+        ai = f"временно недоступен: {esc(assistant.last_error)} — работает резервный режим"
     await message.answer(
         f"Клиентов: {await db.count_users()}\n"
         f"Товаров в каталоге: {await db.count_products()}\n"
-        f"Активных заказов: {len(active)} (новых: {sum(o.status == 'new' for o in active)})"
+        f"Активных заказов: {len(active)} (новых: {sum(o.status == 'new' for o in active)})\n"
+        f"ИИ-ассистент: {ai}"
     )
 
 

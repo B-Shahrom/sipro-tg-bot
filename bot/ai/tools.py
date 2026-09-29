@@ -8,6 +8,8 @@ from typing import Awaitable, Callable
 
 from ..db import Database, Product
 from ..formatting import money
+from ..offline.compat import check, confirmations
+from ..offline.configurator import configure, min_budget
 
 log = logging.getLogger(__name__)
 
@@ -84,6 +86,38 @@ TOOLS = [
         "name": "get_my_orders",
         "description": "List the customer's recent orders and service (warranty/repair) requests with their statuses.",
         "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
+        "name": "check_compatibility",
+        "description": (
+            "Rule-based compatibility check of catalog products by SKU: CPU socket vs motherboard, RAM type, board "
+            "form factor vs case, GPU length vs case, cooler height/socket/TDP, PSU wattage and SFX form factor. "
+            "Returns problems and what was confirmed OK. Always run it before recommending a set of parts."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {"skus": {"type": "array", "items": {"type": "string"}, "minItems": 2}},
+            "required": ["skus"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "build_pc",
+        "description": (
+            "Rule-based configurator: returns a balanced, compatibility-checked PC build from in-stock catalog items "
+            "within the budget, plus a matching ready-built PC if one exists. Use it as the starting point for "
+            "build requests, then adjust parts to the customer's wishes (and re-check compatibility)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "purpose": {"type": "string", "enum": ["gaming", "work", "creator", "office"]},
+                "budget": {"type": "number", "description": "Maximum total price in the store currency."},
+                "preferences": {"type": "string", "description": "e.g. 'white, wifi, intel, compact'"},
+            },
+            "required": ["purpose", "budget"],
+            "additionalProperties": False,
+        },
     },
     {
         "name": "handoff_to_manager",
@@ -223,6 +257,32 @@ async def _dispatch(name: str, args: dict, ctx: ToolContext):
                 "paid": "paid", "shipped": "shipped / ready for pickup", "done": "completed",
                 "cancelled": "cancelled", "in_progress": "service request being worked on", "rejected": "rejected",
             },
+        }
+
+    if name == "check_compatibility":
+        products = await db.products_by_skus([str(x) for x in args.get("skus") or []])
+        if len(products) < 2:
+            raise ToolError("Give at least two existing SKUs.")
+        return {
+            "checked": [p.sku for p in products],
+            "problems": [{"level": i.level, "text": i.text} for i in check(products)],
+            "ok": confirmations(products),
+        }
+
+    if name == "build_pc":
+        build = await configure(db, str(args.get("purpose") or "gaming"), float(args.get("budget") or 0),
+                                str(args.get("preferences") or ""))
+        if not build or not build.parts:
+            cheapest = await min_budget(db, str(args.get("purpose") or "gaming"))
+            return {"build": None, "note": "No build fits this budget from in-stock items.",
+                    "cheapest_possible_total": money(cheapest, ctx.currency) if cheapest else None,
+                    "ready_pc": _product_brief(build.ready_pc, ctx.currency) if build and build.ready_pc else None}
+        return {
+            "parts": [_product_brief(p, ctx.currency) for p in build.parts],
+            "total": money(build.total, ctx.currency),
+            "compatibility_ok": confirmations(build.parts),
+            "notes": build.notes,
+            "ready_pc": _product_brief(build.ready_pc, ctx.currency) if build.ready_pc else None,
         }
 
     if name == "handoff_to_manager":

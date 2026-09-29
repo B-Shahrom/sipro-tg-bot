@@ -2,6 +2,8 @@
 
 import asyncio
 import logging
+import os
+import time
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,6 +12,7 @@ import anthropic
 
 from ..config import Settings
 from ..db import Database
+from ..offline.faq import clean_store_info
 from ..texts import LANGUAGE_PROMPT_NAMES
 from .prompts import SYSTEM_PROMPT
 from .tools import TOOLS, ToolContext, execute_tool
@@ -18,6 +21,8 @@ log = logging.getLogger(__name__)
 
 MAX_TOOL_ROUNDS = 8
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
+# After a failure the AI is skipped for a while (doubling up to the max), so customers don't wait on timeouts.
+COOLDOWN_START, COOLDOWN_MAX = 60.0, 600.0
 
 
 class AssistantUnavailable(Exception):
@@ -60,14 +65,44 @@ class Assistant:
     def __init__(self, settings: Settings, db: Database):
         self.settings = settings
         self.db = db
+        has_credentials = bool(settings.anthropic_api_key or os.environ.get("ANTHROPIC_API_KEY")
+                               or os.environ.get("ANTHROPIC_AUTH_TOKEN"))
+        self.enabled = settings.ai_enabled and has_credentials
         # api_key=None lets the SDK resolve credentials from the environment.
-        self.client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key, timeout=120.0, max_retries=3)
+        self.client = anthropic.AsyncAnthropic(
+            api_key=settings.anthropic_api_key, timeout=max(settings.ai_timeout - 5, 10), max_retries=1,
+        ) if self.enabled else None
         self._locks: defaultdict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
         self._system_cache: dict[str, str] = {}
+        self._failures = 0
+        self._down_until = 0.0
+        self.last_error = ""
+
+    # ---- availability (circuit breaker) ----
+
+    @property
+    def available(self) -> bool:
+        return self.enabled and time.monotonic() >= self._down_until
+
+    def record_failure(self, reason: str) -> bool:
+        """Returns True when this failure takes the AI from working to down (worth alerting about)."""
+        self._failures += 1
+        cooldown = min(COOLDOWN_START * 2 ** (self._failures - 1), COOLDOWN_MAX)
+        self._down_until = time.monotonic() + cooldown
+        self.last_error = reason
+        log.warning("AI unavailable (%s); rule-based replies for %.0fs", reason, cooldown)
+        return self._failures == 1
+
+    def record_success(self) -> bool:
+        """Returns True when the AI has just recovered after failures."""
+        recovered = self._failures > 0
+        self._failures = 0
+        self._down_until = 0.0
+        return recovered
 
     def store_info(self) -> str:
         path: Path = self.settings.store_info_path
-        return path.read_text(encoding="utf-8") if path.exists() else "(no store information provided)"
+        return clean_store_info(path) or "(no store information provided)"
 
     def system_prompt(self, lang: str) -> str:
         # Built once per language and never changed at runtime, so the prompt-cache prefix stays stable.
@@ -98,8 +133,14 @@ class Assistant:
         return await self.client.messages.create(**kwargs)
 
     async def reply(self, ctx: ToolContext, lang: str, text: str) -> Reply:
+        """AI answer. Raises AssistantUnavailable (disabled, API error, or no answer within ai_timeout)."""
+        if not self.enabled:
+            raise AssistantUnavailable("AI is not configured")
         async with self._locks[ctx.user_id]:
-            return await self._reply(ctx, lang, text)
+            try:
+                return await asyncio.wait_for(self._reply(ctx, lang, text), timeout=self.settings.ai_timeout)
+            except asyncio.TimeoutError as e:
+                raise AssistantUnavailable(f"no answer within {self.settings.ai_timeout:.0f}s") from e
 
     async def _reply(self, ctx: ToolContext, lang: str, text: str) -> Reply:
         history = await self.db.get_history(ctx.user_id, self.settings.history_limit)
@@ -113,19 +154,19 @@ class Assistant:
                 response = await self._create(system, history + live)
             except anthropic.AuthenticationError as e:
                 log.error("Anthropic auth failed: %s", e.message)
-                raise AssistantUnavailable from e
+                raise AssistantUnavailable("invalid API key") from e
             except anthropic.RateLimitError as e:
                 log.warning("Anthropic rate limited: %s", e.message)
-                raise AssistantUnavailable from e
+                raise AssistantUnavailable("rate limited") from e
             except anthropic.BadRequestError as e:
                 log.error("Anthropic bad request: %s", e.message)
-                raise AssistantUnavailable from e
+                raise AssistantUnavailable(f"bad request: {e.message[:120]}") from e
             except anthropic.APIStatusError as e:
                 log.error("Anthropic API error %s: %s", e.status_code, e.message)
-                raise AssistantUnavailable from e
+                raise AssistantUnavailable(f"API error {e.status_code}") from e
             except anthropic.APIConnectionError as e:
                 log.error("Anthropic connection error: %s", e)
-                raise AssistantUnavailable from e
+                raise AssistantUnavailable("no connection to the API") from e
 
             usage = response.usage
             log.info(
