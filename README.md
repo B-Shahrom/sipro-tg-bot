@@ -40,6 +40,10 @@ A Telegram bot for a PC hardware store: it answers customers with AI and hands t
    - send `/id` in the managers' group to get the group id (`MANAGER_CHAT_ID`, starts with `-100`).
 
    Put both in `.env` and restart the bot.
+
+   To get **someone else's** id (a store owner or another manager):
+   - **forward** any of their messages to the bot in private chat, and it replies with the sender's id. This works for admins, or for anyone while `ADMIN_IDS` is still empty. If the person hides forwards in their privacy settings, the bot says so; ask them to send `/id` themselves.
+   - in the managers' group, **reply `/id`** to their message. Replying to a bot post about a customer shows that customer's id.
 5. **Fill in `data/store_info.md`** with your real address, hours, delivery, payment, and warranty terms. The AI answers store questions only from this file.
 6. **Load the catalog.** Either run `python -m bot import data/catalog_sample.csv` to start with the demo catalog (40 items), or send your own CSV to the bot with the caption `/import`.
 7. **Run:**

@@ -17,7 +17,16 @@ from aiogram.methods import (
     SendMessage,
     TelegramMethod,
 )
-from aiogram.types import CallbackQuery, Chat, Message, MessageId, Update, User
+from aiogram.types import (
+    CallbackQuery,
+    Chat,
+    Message,
+    MessageId,
+    MessageOriginHiddenUser,
+    MessageOriginUser,
+    Update,
+    User,
+)
 
 from bot.__main__ import build_dispatcher
 from bot.ai.assistant import Assistant
@@ -253,3 +262,36 @@ async def test_id_command(h):
     assert str(CUSTOMER) in h.session.sent(CUSTOMER)[-1].text
     await h.say("/id", user=h.manager, chat_id=MANAGERS)
     assert str(MANAGERS) in h.session.sent(MANAGERS)[-1].text
+
+
+async def test_forward_shows_original_sender_id_to_admin(h):
+    admin = User(id=1, is_bot=False, first_name="Admin")
+    owner = User(id=777, is_bot=False, first_name="Store", last_name="Owner", username="owner")
+    await h.say("привет", user=admin, chat_id=1,
+                forward_origin=MessageOriginUser(date=datetime.now(), sender_user=owner))
+    reply = h.session.sent(1)[-1].text
+    assert "<code>777</code>" in reply and "@owner" in reply and "ADMIN_IDS" in reply
+
+    await h.say("привет", user=admin, chat_id=1,
+                forward_origin=MessageOriginHiddenUser(date=datetime.now(), sender_user_name="Секретный"))
+    assert "id скрыт" in h.session.sent(1)[-1].text
+
+
+async def test_customer_forward_goes_to_assistant(h):
+    h.assistant.script = [resp("end_turn", NS(type="text", text="ответ ассистента"))]
+    other = User(id=555, is_bot=False, first_name="X")
+    await h.say("что это за видеокарта?", forward_origin=MessageOriginUser(date=datetime.now(), sender_user=other))
+    assert h.session.sent(CUSTOMER)[-1].text == "ответ ассистента"
+
+
+async def test_id_reply_in_group_shows_author_and_relayed_customer(h):
+    colleague = User(id=888, is_bot=False, first_name="Коллега")
+    target = h.message("hi", user=colleague, chat_id=MANAGERS)
+    await h.say("/id", user=h.manager, chat_id=MANAGERS, reply_to_message=target)
+    assert "<code>888</code>" in h.session.sent(MANAGERS)[-1].text
+
+    await h.db.remember_relay(4242, CUSTOMER)
+    bot_post = Message(message_id=4242, date=datetime.now(), chat=Chat(id=MANAGERS, type="supergroup"),
+                       from_user=User(id=42, is_bot=True, first_name="bot"), text="заказ")
+    await h.say("/id", user=h.manager, chat_id=MANAGERS, reply_to_message=bot_post)
+    assert f"<code>{CUSTOMER}</code>" in h.session.sent(MANAGERS)[-1].text
